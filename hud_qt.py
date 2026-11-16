@@ -10,7 +10,7 @@ from i18n_hud import STATE_SHORT
 
 WIDTH, HEIGHT = 420, 34
 ALPHA = 0.96
-WAIT_STATES = ("IN_MATCH", "B:WAITING", "B:LOADING")
+WAIT_STATES = ("A:LOADING", "IN_MATCH", "B:WAITING", "B:LOADING")
 
 
 def indicator(running: bool, stuck: bool, state: str) -> str:

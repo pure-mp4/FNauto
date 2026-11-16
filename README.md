@@ -1,6 +1,6 @@
 # FNauto
 
-**Version:** 1.0.0
+**Version:** 1.0.1
 
 FNauto is a Windows desktop companion that automates repetitive Fortnite lobby and match loops. It can keep a match active, move through the post-match screens, return to the lobby, and repeat. Every action is local; there is no account, relay, bot, or telemetry service.
 
@@ -132,7 +132,7 @@ No. The release archive contains the executable and its runtime files. Python is
 
 ### Where are my settings and logs?
 
-Settings are at `%APPDATA%\FNauto\fnauto_settings.json`. Logs are written beside the settings file (`FNauto.log`). Runtime data such as the loot vault and optional `cloudflared.exe` stays under `%LOCALAPPDATA%\FNauto`.
+Settings are at `%APPDATA%\FNauto\fnauto_settings.json`. Logs are written beside the settings file (`FNauto.log`). If Mode A stays in a match for 60 seconds without a state change, it logs the candidate scores and saves a frame in `%APPDATA%\FNauto\diagnostics` (up to five frames). Runtime data such as the loot vault and optional `cloudflared.exe` stays under `%LOCALAPPDATA%\FNauto`.
 
 ### Why does the update check do nothing?
 

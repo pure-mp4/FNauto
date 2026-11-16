@@ -66,3 +66,12 @@ and stop the phone remote when you are finished.
 
 A webhook is not a DM: it always posts into the selected channel. FNauto never
 sends anything unless the webhook is set and the matching toggle is on.
+
+## Mainland China
+
+Discord is blocked in mainland China, including `discord.com` and its webhook
+endpoints. The connection usually hangs instead of returning an error, so the
+test message ends with `No answer; check the connection or firewall`. This is a
+network restriction, not an FNauto error. Discord must be reachable from the
+whole PC through a working non-mainland connection; a browser-only proxy or a
+VPN with split tunneling is not enough.

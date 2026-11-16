@@ -4,7 +4,7 @@ import config
 import i18n
 import web_remote
 
-WAIT_STATES = ("IN_MATCH", "B:WAITING", "B:LOADING")
+WAIT_STATES = ("A:LOADING", "IN_MATCH", "B:WAITING", "B:LOADING")
 KEYS = ("esc", "enter", "w", "a", "s", "d", "pickaxe")
 
 

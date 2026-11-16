@@ -13,6 +13,7 @@ from vision import Plate, aim_point, find_checked, find_plate, find_template
 class State(Enum):
     IDLE = "IDLE"
     SEARCHING_PLAY = "SEARCHING_PLAY"
+    A_LOADING = "A:LOADING"
     IN_MATCH = "IN_MATCH"
     SKIPPING_RESULT = "SKIPPING_RESULT"
     RETURNING_LOBBY = "RETURNING_LOBBY"
@@ -30,6 +31,8 @@ STAGES = [
 ]
 POPUP_KEYS = ("claim", "claim_single", "popup")
 REWARD_KEYS = ("claim", "claim_single")
+PLAY_RETRY_S = 15.0
+LOAD_FALLBACK_S = 120.0
 
 
 @dataclass
@@ -107,6 +110,9 @@ class StateMachine:
         self.modefix = ModeFix(settings, clock, log=lambda m: self.log(m))
         self.survey = SurveyGuard(clock)
         self.fallback = RewardFallback(clock)
+        self._loading_since = 0.0
+        self._loading_retry = 0.0
+        self._loading_quiet = False
 
     def start(self) -> None:
         if self.state is State.IDLE:
@@ -133,7 +139,81 @@ class StateMachine:
                 note_claim(self, r.key, frame)
             return r
 
+    def _find(self, frame: np.ndarray, key: str, tpl):
+        if isinstance(tpl, Plate):
+            plate = self.cal.plate(key, tpl)
+            return find_checked(frame, key, tpl, lambda f: find_plate(f, plate, self.s.scales))
+        thr = self.cal.threshold_for(key, self.s.threshold)
+        return find_checked(frame, key, tpl, lambda f: find_template(f, tpl, thr, self.s.scales))
+
+    def _plate_allowed(self, frame: np.ndarray) -> bool:
+        hud_tpl = self.templates.get("hud")
+        if hud_tpl is None:
+            return False
+        hud, _ = self._find(frame, "hud", hud_tpl)
+        if hud:
+            return False
+        checks = ("return_lobby_text_en", "return_lobby_text_ja")
+        if not any(self.templates.get(key) is not None for key in checks):
+            return False
+        for key in checks:
+            text_tpl = self.templates.get(key)
+            if text_tpl is None:
+                continue
+            text, _ = self._find(frame, key, text_tpl)
+            if text:
+                return True
+        return False
+
+    def _loading(self, frame: np.ndarray, ox: int = 0, oy: int = 0) -> StepResult:
+        hud_tpl = self.templates.get("hud")
+        hud_score = 0.0
+        now = self._clock()
+        if hud_tpl is not None:
+            m, hud_score = self._find(frame, "hud", hud_tpl)
+            if m:
+                self.state = State.IN_MATCH
+                return StepResult(self.state, hud_score, False, "match started")
+        if now - self._loading_since >= LOAD_FALLBACK_S:
+            self._loading_quiet = True
+            return StepResult(self.state, hud_score, False, "waiting match (no-input fallback)")
+        play_tpl = self.templates.get("play")
+        if not self._loading_quiet and play_tpl is not None and now - self._loading_retry >= PLAY_RETRY_S:
+            m, score = self._find(frame, "play", play_tpl)
+            if m and self.ctrl.click(*(a + o for a, o in zip(aim_point("play", play_tpl, m), (ox, oy)))):
+                self._loading_retry = now
+                return StepResult(self.state, score, True, "clicked play (retry)", "play")
+        return StepResult(self.state, hud_score, False, "waiting match")
+
+    def diagnose(self, frame: np.ndarray) -> dict:
+        out = {}
+        for key in (
+            "hud",
+            "play",
+            "continue",
+            "skip",
+            "return_lobby",
+            "return_lobby_plate",
+            "return_lobby_text_en",
+            "return_lobby_text_ja",
+            "menu_return",
+        ):
+            tpl = self.templates.get(key)
+            if tpl is None:
+                out[key] = None
+                continue
+            m, score = self._find(frame, key, tpl)
+            thr = tpl.threshold if isinstance(tpl, Plate) else self.cal.threshold_for(key, self.s.threshold)
+            out[key] = {
+                "score": round(float(score), 3),
+                "threshold": round(float(thr), 3),
+                "at": [int(m[0]), int(m[1])] if m else None,
+            }
+        return out
+
     def _step(self, frame: np.ndarray, ox: int = 0, oy: int = 0) -> StepResult:
+        if self.state is State.A_LOADING:
+            return self._loading(frame, ox, oy)
         if self.state is State.SEARCHING_PLAY and self.ctrl.ready():
             fx = self.modefix.poll(frame)
             if fx and self.ctrl.click(fx[0] + ox, fx[1] + oy):
@@ -147,11 +227,18 @@ class StateMachine:
             if idx == 0 and key == "continue":
                 cands.append((key, None, False))
             else:
-                cands.append((key, STAGES[(i + 1) % n][0], key == "return_lobby"))
-        if idx >= 1:
+                nxt = STAGES[(i + 1) % n][0]
+                if key == "play" and nxt is State.IN_MATCH:
+                    nxt = State.A_LOADING
+                cands.append((key, nxt, key == "return_lobby"))
+                if key == "return_lobby" and self.state is not State.SEARCHING_PLAY:
+                    cands.append(("return_lobby_plate", nxt, True))
+        if idx >= 1 and not (self.state is State.IN_MATCH and STAGES[idx - 1][1] == "play"):
             cands.append((STAGES[idx - 1][1], None, False))
         if idx >= 2:
-            cands.append(("play", State.IN_MATCH, False))
+            cands.append(("play", State.A_LOADING, False))
+        if idx == 0:
+            cands.insert(0, ("return_lobby", State.SEARCHING_PLAY, False))
         cands = cands + [("storefront_play", nxt, fin) for key, nxt, fin in cands if key == "play"]
         for key in POPUP_KEYS:
             cands.append((key, None, False))
@@ -160,24 +247,24 @@ class StateMachine:
             tpl = self.templates.get(key)
             if tpl is None:
                 continue
-            else:
-                if isinstance(tpl, Plate):
-                    plate = self.cal.plate(key, tpl)
-                    m, score = find_checked(frame, key, tpl, lambda f: find_plate(f, plate, self.s.scales))
-                else:
-                    thr = self.cal.threshold_for(key, self.s.threshold)
-                    m, score = find_checked(frame, key, tpl, lambda f: find_template(f, tpl, thr, self.s.scales))
-                if key == own_key:
-                    own_score = score
-                if m:
-                    if self.ctrl.click(*(a + o for a, o in zip(aim_point(key, tpl, m), (ox, oy)))):
-                        if nxt is None:
-                            return StepResult(self.state, score, True, f"clicked {key} (stay)", key)
-                        else:
-                            if finishes_loop:
-                                self.loops += 1
-                            self.state = nxt
-                            return StepResult(self.state, score, True, f"clicked {key}", key)
+            if key == "return_lobby_plate" and not self._plate_allowed(frame):
+                continue
+            m, score = self._find(frame, key, tpl)
+            if key == own_key:
+                own_score = score
+            if m:
+                if self.ctrl.click(*(a + o for a, o in zip(aim_point(key, tpl, m), (ox, oy)))):
+                    if nxt is None:
+                        return StepResult(self.state, score, True, f"clicked {key} (stay)", key)
+                    else:
+                        if finishes_loop:
+                            self.loops += 1
+                        if nxt is State.A_LOADING:
+                            self._loading_since = self._clock()
+                            self._loading_retry = self._loading_since
+                            self._loading_quiet = False
+                        self.state = nxt
+                        return StepResult(self.state, score, True, f"clicked {key}", key)
         own_tpl = self.templates.get(own_key)
         if own_tpl is None:
             return StepResult(self.state, 0.0, False, f"{own_key} template missing")
@@ -200,6 +287,10 @@ class StateMachine:
                 if own_fin:
                     self.loops += 1
                 if own_nxt is not None:
+                    if own_nxt is State.A_LOADING:
+                        self._loading_since = self._clock()
+                        self._loading_retry = self._loading_since
+                        self._loading_quiet = False
                     self.state = own_nxt
                 return StepResult(self.state, own_score, True, f"auto-calibrate test click on {own_key}")
             else:

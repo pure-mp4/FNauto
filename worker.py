@@ -2,6 +2,8 @@ import os
 import queue
 import threading
 import time
+from pathlib import Path
+import cv2
 import config
 import i18n
 from anti_afk import AntiAfk
@@ -26,15 +28,52 @@ from watchdog import Watchdog
 from window_capture import GameWindow, WindowCapture
 
 BG_HINTS = {"minimized": "log_bg_minimized", "black": "log_bg_black", "denied": "log_bg_denied"}
+STUCK_DIAG_AFTER_S = 60.0
+STUCK_DIAG_EVERY_S = 120.0
+STUCK_DIAG_MAX = 5
+
+
+def diagnostic_dir(settings) -> str:
+    base = os.path.dirname(getattr(settings, "path", "")) or config.base_dir()
+    return os.path.join(base, "diagnostics")
+
+
+def save_diagnostic_frame(frame, settings) -> str:
+    try:
+        folder = diagnostic_dir(settings)
+        os.makedirs(folder, exist_ok=True)
+        path = os.path.join(folder, time.strftime("IN_MATCH_%Y%m%d_%H%M%S.png"))
+        ok, buf = cv2.imencode(".png", frame)
+        if not ok:
+            return ""
+        Path(path).write_bytes(buf.tobytes())
+        return path
+    except Exception:
+        return ""
 
 
 def load_templates(lang: str) -> dict:
-    return {
+    templates = {
         k: load_template_auto(config.template_path(k, lang), config.PLATES.get(k))
         if config.uses_template(k, lang)
         else None
         for k in config.TEMPLATE_NAMES
     }
+    plate_path = os.path.join(config.assets_dir(), "return_lobby_btn_plate.png")
+    if not os.path.isfile(plate_path):
+        plate_path = os.path.join(config.bundled_assets_dir(), "return_lobby_btn_plate.png")
+    templates["return_lobby_plate"] = load_template_auto(
+        plate_path, {"roi": config.PLATES["return_lobby"]["roi"], "threshold": 0.84}
+    )
+    for key, filename in (
+        ("return_lobby_text_en", "return_lobby_btn_en.png"),
+        ("return_lobby_text_ja", "return_lobby_btn.png"),
+    ):
+        text_path = os.path.join(config.assets_dir(), filename)
+        if not os.path.isfile(text_path):
+            text_path = os.path.join(config.bundled_assets_dir(), filename)
+        templates[key] = load_template_auto(text_path)
+    return templates
 
 
 class Worker(threading.Thread):
@@ -169,6 +208,10 @@ class Worker(threading.Thread):
         )
         rel_thread.start()
         last_note, last_score, last_src = ("", (-1.0), "")
+        diag_state = None
+        diag_since = time.monotonic()
+        diag_last = 0.0
+        diag_count = 0
 
         def alert(code: str, detail: str) -> None:
             if self.reporter and self.s.alert_enabled:
@@ -216,6 +259,31 @@ class Worker(threading.Thread):
                     if note:
                         self.log_q.put(i18n.t(self.s.lang, note))
                     r = sm.step(frame, ox, oy)
+                    now_diag = time.monotonic()
+                    if mode == "A" and r.state is State.IN_MATCH:
+                        if diag_state is not State.IN_MATCH:
+                            diag_state = State.IN_MATCH
+                            diag_since = now_diag
+                            diag_last = 0.0
+                            diag_count = 0
+                        elif (
+                            diag_count < STUCK_DIAG_MAX
+                            and now_diag - diag_since >= STUCK_DIAG_AFTER_S
+                            and (diag_last == 0.0 or now_diag - diag_last >= STUCK_DIAG_EVERY_S)
+                        ):
+                            scores = sm.diagnose(frame)
+                            path = save_diagnostic_frame(frame, self.s)
+                            message = f"[diag] IN_MATCH {int(now_diag - diag_since)}s without a transition: {scores}"
+                            if path:
+                                message += f" frame={path}"
+                            self.log_q.put(message)
+                            diag_last = now_diag
+                            diag_count += 1
+                    else:
+                        diag_state = r.state
+                        diag_since = now_diag
+                        diag_last = 0.0
+                        diag_count = 0
                     try:
                         if sm.state.value in ("B:LOBBY", "SEARCHING_PLAY"):
                             self.relauncher.note_play()

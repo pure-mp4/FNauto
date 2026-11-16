@@ -21,11 +21,11 @@ def qapp():
 
 
 def test_one_version_constant_and_release_metadata():
-    assert version.APP_VERSION == "1.0.0"
+    assert version.APP_VERSION == "1.0.1"
     assert not hasattr(version, "__version__")
     info = (ROOT / "version_info.txt").read_text(encoding="utf-8")
-    assert "FileVersion', '1.0.0.0'" in info
-    assert "ProductVersion', '1.0.0.0'" in info
+    assert "FileVersion', '1.0.1.0'" in info
+    assert "ProductVersion', '1.0.1.0'" in info
     assert "FileDescription', 'FNauto'" in info
     assert "OriginalFilename', 'FNauto.exe'" in info
     assert "LegalCopyright', 'Copyright (c) 2026 FNauto contributors'" in info
@@ -38,8 +38,8 @@ def test_version_is_used_by_build_ui_docs_and_issue_template():
         ("updater.py", "from version import APP_VERSION"),
         ("app_support.py", "from version import APP_VERSION"),
         ("scripts/package_release.bat", "from version import APP_VERSION"),
-        ("README.md", "Version:** 1.0.0"),
-        (".github/ISSUE_TEMPLATE/bug_report.md", "v1.0.0"),
+        ("README.md", "Version:** 1.0.1"),
+        (".github/ISSUE_TEMPLATE/bug_report.md", "v1.0.1"),
     )
     old_patch = ".".join(("2", "2", "8"))
     old_legacy = ".".join(("2", "2", "9"))
