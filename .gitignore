@@ -1,0 +1,12 @@
+__pycache__/
+*.py[cod]
+.venv/
+build/
+dist/
+_qa/
+fnauto_settings.json
+*.log
+recorder_log.txt
+
+*.zip
+*.sha256
