@@ -1,6 +1,6 @@
 # FNauto
 
-**Version:** 1.0.1
+**Version:** 1.1
 
 FNauto is a Windows desktop companion that automates repetitive Fortnite lobby and match loops. It can keep a match active, move through the post-match screens, return to the lobby, and repeat. Every action is local; there is no account, relay, bot, or telemetry service.
 

@@ -60,6 +60,7 @@ from PySide6.QtWidgets import (
     QVBoxLayout,
     QHBoxLayout,
     QGridLayout,
+    QLayout,
     QStackedWidget,
     QScrollArea,
     QPlainTextEdit,
@@ -205,6 +206,14 @@ RAIL_W = 58
 GAP = 16
 PAD = 14
 R_CARD = 14
+SPIN_HEIGHT = 36
+SPIN_ROW_HEIGHT = 44
+SPIN_ROW_INDENT = 44
+SPIN_LABEL_WIDTH = 190
+SPIN_ROW_BOTTOM = 2
+TOGGLE_ROW_HEIGHT = 32
+TOGGLE_ROW_TOP = 2
+CARD_PAD = 16
 REDUCE_MOTION = False
 FONT_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "assets", "fonts")
 
@@ -364,9 +373,13 @@ class Theme(QObject):
         return f"""
 QWidget {{ color: {t["TEXT"]}; font-family: Inter, 'Segoe UI'; font-size: 10pt; }}
 QLabel {{ background: transparent; }}
-QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox {{
+QLineEdit, QComboBox {{
   background: {t["FIELD"]}; color: {t["TEXT"]}; border: 1px solid {t["EDGE"]};
   border-radius: 8px; padding: 3px 8px; min-height: 24px;
+}}
+QSpinBox, QDoubleSpinBox {{
+  background: {t["FIELD"]}; color: {t["TEXT"]}; border: 1px solid {t["EDGE"]};
+  border-radius: 8px; padding: 3px 8px;
 }}
 QLineEdit:focus, QSpinBox:focus, QDoubleSpinBox:focus, QComboBox:focus {{ border: 1px solid {t["ACCENT"]}; background: {t["FIELD_HI"]}; }}
 QSpinBox::up-button, QSpinBox::down-button, QDoubleSpinBox::up-button, QDoubleSpinBox::down-button {{ width: 0px; subcontrol-origin: border; background: transparent; border: none; }}
@@ -380,6 +393,13 @@ QPushButton {{ background: {t["FIELD"]}; color: {t["TEXT"]}; border: 1px solid {
   border-radius: 8px; padding: 7px 14px; min-height: 22px; }}
 QPushButton:hover {{ background: {t["HOVER"]}; }}
 QLabel[role="muted"] {{ color: {t["MUTED"]}; }}
+QScrollArea {{ background: transparent; border: none; }}
+QScrollArea > QWidget > QWidget {{ background: transparent; }}
+QScrollBar:vertical {{ background: transparent; width: 7px; margin: 0; border: none; }}
+QScrollBar::handle:vertical {{ background: {t["EDGE"]}; min-height: 34px; border-radius: 3px; }}
+QScrollBar::handle:vertical:hover {{ background: {t["ACCENT"]}; }}
+QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {{ height: 0; }}
+QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {{ background: transparent; }}
 """
 
 
@@ -460,6 +480,16 @@ class Settings(QObject):
             "bus_drop_max": 25,
             "window_x": -1,
             "window_y": -1,
+            "window_w": 940,
+            "window_h": 680,
+            "window_maximized": False,
+            "movement_profile": "continuous",
+            "sprint_enabled": True,
+            "sprint_interval_s": 3.0,
+            "sprint_hold_s": 15.0,
+            "jump_stride_enabled": True,
+            "jump_stride_interval_s": 5.0,
+            "treasure_shot_enabled": True,
         }
         try:
             with open(self.path, "r", encoding="utf-8") as f:
@@ -547,6 +577,7 @@ def icon_pixmap(kind: str, size: int, color: str) -> QPixmap:
         "bell": "M12 3a5 5 0 015 5v4l2 3H5l2-3V9a5 5 0 015-5zM10 19h4",
         "exit": "M14 4h5v16h-5M4 12h11M11 8l4 4-4 4",
         "min": "M6 12h12",
+        "max": "M6 6h12v12H6z",
         "close": "M7 7l10 10M17 7L7 17",
     }
     if kind == "bell":
@@ -571,6 +602,7 @@ def icon_pixmap(kind: str, size: int, color: str) -> QPixmap:
         "guide": "book",
         "bell": "bell",
         "min": "min",
+        "max": "max",
         "close": "close",
         "exit": "exit",
     }.get(kind, "list")
@@ -593,17 +625,26 @@ class Card(QWidget):
         super().__init__(parent)
         self.theme = theme
         self.tile = tile
+        self.hover = False
         self.body = QVBoxLayout(self)
-        self.body.setContentsMargins(16, 16, 16, 16)
+        self.body.setContentsMargins(CARD_PAD, CARD_PAD, CARD_PAD, CARD_PAD)
         self.body.setSpacing(8)
         self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+
+    def enterEvent(self, _e) -> None:
+        self.hover = True
+        self.update()
+
+    def leaveEvent(self, _e) -> None:
+        self.hover = False
+        self.update()
 
     def paintEvent(self, _e) -> None:
         p = QPainter(self)
         p.setRenderHint(QPainter.Antialiasing)
         fill = self.theme.c("TILE" if self.tile else "GLASS")
-        edge = self.theme.c("EDGE")
-        p.setPen(QPen(edge, 1))
+        edge = self.theme.c("ACCENT_HI").darker(120) if self.hover else self.theme.c("EDGE")
+        p.setPen(QPen(edge, 1.2 if self.hover else 1.0))
         p.setBrush(fill)
         p.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), R_CARD, R_CARD)
         p.end()
@@ -678,14 +719,17 @@ class _SpinChrome:
         self.setButtonSymbols(QAbstractSpinBox.NoButtons)
         self.setMouseTracking(True)
         self.setFocusPolicy(Qt.ClickFocus)
-        self.setMinimumHeight(30)
+        self.setFixedHeight(SPIN_HEIGHT)
         self.lineEdit().setTextMargins(self.LEFT_PAD, 0, 0, 0)
+        self.lineEdit().setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         self.lineEdit().setStyleSheet("background: transparent; border: none;")
         self._fit_width()
+        self._position_line_edit()
 
     def _position_line_edit(self) -> None:
         le = self.lineEdit()
-        le.setGeometry(0, 3, max(1, self.width() - self.ARROW_W), max(1, self.height() - 6))
+        height = max(1, self.height() - 6)
+        le.setGeometry(0, (self.height() - height) // 2, max(1, self.width() - self.ARROW_W), height)
 
     def resizeEvent(self, e):
         super().resizeEvent(e)
@@ -825,7 +869,8 @@ class RoundButton(QWidget):
             base = t.c("DANGER")
         else:
             base = t.c("FIELD")
-        p.setPen(QPen(t.c("EDGE") if self.kind == "ghost" else base, 1))
+        border = t.c("ACCENT_HI") if (self.hover and self.kind in ("primary", "ghost")) else (t.c("EDGE") if self.kind == "ghost" else base)
+        p.setPen(QPen(border, 1.5 if self.hover else 1.0))
         p.setBrush(base)
         p.drawRoundedRect(QRectF(0.5, 0.5, self.width() - 1, self.height() - 1), 8, 8)
         p.setPen(QColor("#FFFFFF") if self.kind in ("primary", "danger") else t.c("TEXT"))
@@ -1007,18 +1052,20 @@ class StatusPill(QWidget):
 class TitleBar(QWidget):
     bell = Signal()
     minimise = Signal()
+    maximise = Signal()
     close = Signal()
     outside_clicked = Signal()
 
     def __init__(self, theme: Theme, parent=None):
         super().__init__(parent)
         self.theme = theme
-        self.buttons = ("close", "min", "bell")
+        self.buttons = ("close", "max", "min", "bell")
         self.hover = None
         self.hover_t = 0.0
         self.unread = 0
         self.badge_pop = 1.0
         self.pill = StatusPill(theme, self)
+        self._drag_start = None
         self.setFixedHeight(TB)
         self.setMouseTracking(True)
         self.anim = QVariantAnimation(self)
@@ -1059,23 +1106,44 @@ class TitleBar(QWidget):
             return
         if e.button() == Qt.LeftButton:
             self.outside_clicked.emit()
-        if e.position().x() < self.width() - 180 and e.button() == Qt.LeftButton:
             win = self.window()
-            if win.windowHandle():
-                win.windowHandle().startSystemMove()
+            if win:
+                self._drag_start = e.globalPosition().toPoint() - win.pos()
 
     def mouseReleaseEvent(self, e) -> None:
+        self._drag_start = None
         key = self._hit(e.position())
         if key == "bell":
             self.bell.emit()
         elif key == "min":
             self.minimise.emit()
+        elif key == "max":
+            self.maximise.emit()
         elif key == "close":
             self.close.emit()
 
     def mouseMoveEvent(self, e) -> None:
         key = self._hit(e.position())
         if key != self.hover:
+            self.hover = key
+            self.anim.stop()
+            self.anim.setStartValue(self.hover_t)
+            self.anim.setEndValue(1.0 if key else 0.0)
+            self.anim.start()
+            self.setCursor(Qt.PointingHandCursor if key else Qt.ArrowCursor)
+        if hasattr(self, "_drag_start") and self._drag_start is not None and e.buttons() & Qt.LeftButton:
+            win = self.window()
+            if win:
+                if win.isMaximized():
+                    # If maximized, restore and align drag
+                    ratio = e.position().x() / max(1.0, float(self.width()))
+                    win.showNormal()
+                    new_x = int(e.globalPosition().x() - win.width() * ratio)
+                    new_y = int(e.globalPosition().y() - e.position().y())
+                    win.move(new_x, new_y)
+                    self._drag_start = e.globalPosition().toPoint() - win.pos()
+                else:
+                    win.move(e.globalPosition().toPoint() - self._drag_start)
             self.hover = key
             self.anim.stop()
             self.anim.setStartValue(self.hover_t)
@@ -1168,11 +1236,13 @@ class Rail(QWidget):
         if name != self.hover:
             self.hover = name
             self.hovered.emit(name)
+            self.setCursor(Qt.PointingHandCursor if name else Qt.ArrowCursor)
             self.update()
 
     def leaveEvent(self, _e) -> None:
         self.hover = None
         self.hovered.emit("")
+        self.setCursor(Qt.ArrowCursor)
         self.update()
 
     def set_active(self, name: str) -> None:
@@ -1202,7 +1272,7 @@ class Rail(QWidget):
                 p.drawLine(QPointF(2, c.y() - 10), QPointF(2, c.y() + 10))
             elif name == self.hover:
                 p.setBrush(t.c("HOVER"))
-                p.setPen(Qt.NoPen)
+                p.setPen(QPen(t.c("ACCENT_HI").darker(110), 1))
                 p.drawRoundedRect(r, 9, 9)
             col = "#6aa8ff" if active else ("#ffffff" if name == self.hover else "#8da2c0")
             pm = icon_pixmap(name, 26, col)
@@ -1379,9 +1449,11 @@ class Page(QWidget):
         super().__init__(parent)
         self.theme = theme
         self.cards = []
+        self.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         self.outer = QVBoxLayout(self)
         self.outer.setContentsMargins(0, 0, 0, 0)
         self.outer.setSpacing(12)
+        self.outer.setSizeConstraint(QLayout.SetMinimumSize)
         self.outer.addSpacing(0)
         self.cards_layout = self.outer
 
@@ -1434,7 +1506,7 @@ class Page(QWidget):
         row = QWidget()
         row.setObjectName("ToggleRow_" + key)
         lay = QHBoxLayout(row)
-        lay.setContentsMargins(0, 0, 0, 0)
+        lay.setContentsMargins(0, TOGGLE_ROW_TOP, 0, 0)
         lay.setSpacing(12)
         toggle = Toggle(self.theme)
         toggle.set_on(bool(settings.get(key, False)))
@@ -1447,40 +1519,53 @@ class Page(QWidget):
         toggle.toggled.connect(changed)
         label = self.text_label(label_key, wrap=True)
         label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-        lay.addWidget(toggle, 0, Qt.AlignTop)
+        lay.addWidget(toggle, 0, Qt.AlignVCenter)
         lay.addWidget(label, 1)
-        row.setMinimumHeight(24)
+        row.setMinimumHeight(TOGGLE_ROW_HEIGHT)
         return row, toggle
 
-    def spin_row(self, label_key: str, spin, unit_key: str, mid_key: str = "", second=None):
+    def spin_row(
+        self,
+        label_key: str,
+        spin,
+        unit_key: str,
+        mid_key: str = "",
+        second=None,
+        indent: int = SPIN_ROW_INDENT,
+        post_wrap: bool = False,
+    ):
         row = QWidget()
         row.setObjectName("SpinRow_" + label_key)
+        row.setMinimumHeight(SPIN_ROW_HEIGHT)
+        row.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Minimum)
         grid = QGridLayout(row)
-        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setContentsMargins(indent, 0, 0, SPIN_ROW_BOTTOM)
         grid.setHorizontalSpacing(10)
         grid.setVerticalSpacing(0)
         label = self.text_label(label_key, muted=True, wrap=True)
-        label.setFixedWidth(190)
+        label.setFixedWidth(SPIN_LABEL_WIDTH)
         label.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Preferred)
-        spin.setMinimumHeight(30)
+        label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         grid.addWidget(label, 0, 0)
-        grid.addWidget(spin, 0, 1)
+        grid.addWidget(spin, 0, 1, Qt.AlignVCenter)
         if second is not None:
-            mid = self.text_label(mid_key, muted=True, wrap=True)
+            mid = self.text_label(mid_key, muted=True, wrap=False)
             mid.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-            second.setMinimumHeight(30)
-            unit = self.text_label(unit_key, muted=True, wrap=True)
+            mid.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            unit = self.text_label(unit_key, muted=True, wrap=post_wrap)
             unit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            grid.addWidget(mid, 0, 2)
-            grid.addWidget(second, 0, 3)
-            grid.addWidget(unit, 0, 4)
+            unit.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            grid.addWidget(mid, 0, 2, Qt.AlignVCenter)
+            grid.addWidget(second, 0, 3, Qt.AlignVCenter)
+            grid.addWidget(unit, 0, 4, Qt.AlignVCenter)
             grid.setColumnStretch(4, 1)
         else:
-            unit = self.text_label(unit_key, muted=True, wrap=True)
+            unit = self.text_label(unit_key, muted=True, wrap=post_wrap)
             unit.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
-            grid.addWidget(unit, 0, 2)
+            unit.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            grid.addWidget(unit, 0, 2, Qt.AlignVCenter)
             grid.setColumnStretch(2, 1)
-        grid.setColumnMinimumWidth(0, 190)
+        grid.setColumnMinimumWidth(0, SPIN_LABEL_WIDTH)
         return row
 
     def add_card(self, tile: bool = False) -> Card:
@@ -1506,7 +1591,7 @@ class HomePage(Page):
             ("score", "tile_score", "0.00"),
         ):
             card = self.add_card(tile=True)
-            card.setFixedHeight(84)
+            card.setFixedHeight(96)
             label = QLabel()
             label.setStyleSheet(f"font-size:12px; font-weight:600; color:{theme.tokens['MUTED']};")
             val = QLabel(default)
@@ -1572,9 +1657,10 @@ class HomePage(Page):
             self.radios[key] = r
             loop.body.addWidget(r)
         fields = QGridLayout()
+        fields.setContentsMargins(0, 0, 0, 0)
         fields.setHorizontalSpacing(10)
-        fields.setVerticalSpacing(0)
-        fields.setColumnMinimumWidth(0, 190)
+        fields.setVerticalSpacing(10)
+        fields.setColumnMinimumWidth(0, SPIN_LABEL_WIDTH)
         fields.setColumnStretch(0, 0)
         fields.setColumnStretch(1, 0)
         fields.setColumnStretch(2, 0)
@@ -1599,13 +1685,16 @@ class HomePage(Page):
         for i, (pre, spin, post) in enumerate(rows):
             lp = QLabel()
             lp.setWordWrap(False)
-            lp.setMinimumWidth(190)
+            lp.setFixedWidth(SPIN_LABEL_WIDTH)
+            lp.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
             lu = QLabel()
             lu.setWordWrap(False)
-            fields.addWidget(lp, i, 0)
-            fields.addWidget(spin, i, 1)
-            fields.addWidget(lu, i, 2)
-            fields.setRowMinimumHeight(i, 44)
+            lu.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+            lu.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+            fields.addWidget(lp, i, 0, Qt.AlignVCenter)
+            fields.addWidget(spin, i, 1, Qt.AlignVCenter)
+            fields.addWidget(lu, i, 2, Qt.AlignVCenter)
+            fields.setRowMinimumHeight(i, SPIN_ROW_HEIGHT)
             if TR is not None:
                 TR.add(lp, pre)
                 TR.add(lu, post)
@@ -1730,6 +1819,12 @@ class PlayPage(Page):
         space_count.valueChanged.connect(lambda v: self.settings.set("space_count", int(v)))
         self.spins["space_count"] = space_count
         keys.body.addWidget(self.spin_row("space_pre", space_sec, "space_post", "space_mid", space_count))
+        row, toggle = self.toggle_row(settings, "sprint_enabled", "ex_sprint")
+        self.toggles["sprint_enabled"] = toggle
+        keys.body.addWidget(row)
+        row, toggle = self.toggle_row(settings, "jump_stride_enabled", "ex_jump_stride")
+        self.toggles["jump_stride_enabled"] = toggle
+        keys.body.addWidget(row)
         self.outer.addWidget(keys)
 
         card = self.add_card()
@@ -2035,6 +2130,7 @@ class ExtrasPage(Page):
         auto.body.addWidget(self.card_title("sec_automation"))
         for key, label in (
             ("loot_vault_enabled", "ex_loot"),
+            ("treasure_shot_enabled", "ex_treasure_shot"),
             ("mode_fix_enabled", "ex_modefix"),
             ("bus_drop_enabled", "ex_bus"),
             ("pickaxe_afk_enabled", "ex_pickaxe"),
@@ -2114,29 +2210,10 @@ class ExtrasPage(Page):
         post_key: str,
         mid_key: str = "",
         second=None,
-        indent: int = 12,
+        indent: int = SPIN_ROW_INDENT,
         post_wrap: bool = False,
     ) -> QWidget:
-        row = QWidget()
-        lay = QHBoxLayout(row)
-        lay.setContentsMargins(indent, 0, 0, 0)
-        lay.setSpacing(6)
-        pre = self.text_label(pre_key, muted=True, wrap=False)
-        pre.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
-        spin.setMinimumHeight(30)
-        lay.addWidget(pre)
-        lay.addWidget(spin)
-        if second is not None:
-            mid = self.text_label(mid_key, muted=True, wrap=False)
-            second.setMinimumHeight(30)
-            lay.addWidget(mid)
-            lay.addWidget(second)
-        post = self.text_label(post_key, muted=True, wrap=post_wrap)
-        post.setSizePolicy(QSizePolicy.Expanding if post_wrap else QSizePolicy.Preferred, QSizePolicy.Preferred)
-        lay.addWidget(post)
-        if not post_wrap:
-            lay.addStretch(1)
-        return row
+        return self.spin_row(pre_key, spin, post_key, mid_key=mid_key, second=second, indent=indent, post_wrap=post_wrap)
 
     def _reward_button_row(self) -> QWidget:
         row = QWidget()
@@ -3473,8 +3550,17 @@ class Shell(QWidget):
             except Exception:
                 pass
         self.setWindowIcon(app_icon.icon())
-        self.setFixedSize(WIN_W, WIN_H)
+        self.setMinimumSize(880, 640)
+        self.setMouseTracking(True)
+        self._resize_edge = 0
+        self._resize_start_pos = None
+        self._resize_start_geom = None
+        w = max(880, int(settings.get("window_w", 940)))
+        h = max(640, int(settings.get("window_h", 720)))
+        self.resize(w, h)
         self._restore_window()
+        if bool(settings.get("window_maximized", False)):
+            self.showMaximized()
         self.setFocusPolicy(Qt.StrongFocus)
         self.setStyleSheet(theme.qss())
         outer = QVBoxLayout(self)
@@ -3492,6 +3578,7 @@ class Shell(QWidget):
         body.addWidget(self.stack, 1)
         outer.addLayout(body, 1)
         self.pages = {}
+        self.page_scrolls = {}
         self.home = HomePage(theme, settings, self.signals)
         self.play = PlayPage(theme, settings, self.signals)
         self.discord = DiscordPage(theme, settings, self.signals, self.reporter)
@@ -3510,13 +3597,26 @@ class Shell(QWidget):
         ):
             page.setStyleSheet("background: transparent;")
             self.pages[name] = page
-            self.stack.addWidget(page)
-        self.stack.setCurrentWidget(self.home)
+            if name in ("extras", "log", "guide"):
+                container = page
+            else:
+                container = QScrollArea()
+                container.setObjectName("PageScroll_" + name)
+                container.setWidgetResizable(True)
+                container.setFrameShape(QFrame.NoFrame)
+                container.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+                container.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+                container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Expanding)
+                container.setWidget(page)
+            self.page_scrolls[name] = container
+            self.stack.addWidget(container)
+        self.stack.setCurrentWidget(self.page_scrolls["home"])
         self.rail.clicked.connect(self.set_page)
         self.rail.quit_clicked.connect(self.close)
         self.title.bell.connect(self.toggle_notes)
         self.title.outside_clicked.connect(self._close_notes)
         self.title.minimise.connect(self.showMinimized)
+        self.title.maximise.connect(self.toggle_maximize)
         self.title.close.connect(self.close)
         self.title.pill.set_running(False)
         self.signals.running.connect(self.title.pill.set_running)
@@ -3602,14 +3702,94 @@ class Shell(QWidget):
             pass
         self._geom_ready = True
 
+    def toggle_maximize(self) -> None:
+        if self.isMaximized():
+            self.showNormal()
+            self.settings.set("window_maximized", False)
+        else:
+            self.showMaximized()
+            self.settings.set("window_maximized", True)
+
+    def _get_resize_edge(self, pos: QPoint) -> int:
+        if self.isMaximized():
+            return 0
+        x, y = pos.x(), pos.y()
+        w, h = self.width(), self.height()
+        m = 8
+        edge = 0
+        if x < m:
+            edge |= 1
+        elif x > w - m:
+            edge |= 2
+        if y < m:
+            edge |= 4
+        elif y > h - m:
+            edge |= 8
+        return edge
+
+    def _cursor_for_edge(self, edge: int) -> Qt.CursorShape:
+        if edge in (1 | 4, 2 | 8):
+            return Qt.SizeFDiagCursor
+        if edge in (2 | 4, 1 | 8):
+            return Qt.SizeBDiagCursor
+        if edge in (1, 2):
+            return Qt.SizeHorCursor
+        if edge in (4, 8):
+            return Qt.SizeVerCursor
+        return Qt.ArrowCursor
+
+    def mousePressEvent(self, e) -> None:
+        edge = self._get_resize_edge(e.position().toPoint())
+        if edge and e.button() == Qt.LeftButton:
+            self._resize_edge = edge
+            self._resize_start_pos = e.globalPosition().toPoint()
+            self._resize_start_geom = self.geometry()
+            e.accept()
+            return
+        super().mousePressEvent(e)
+
+    def mouseMoveEvent(self, e) -> None:
+        if getattr(self, "_resize_edge", 0):
+            delta = e.globalPosition().toPoint() - self._resize_start_pos
+            geom = QRect(self._resize_start_geom)
+            min_w, min_h = self.minimumWidth(), self.minimumHeight()
+            if self._resize_edge & 1:
+                new_w = max(min_w, geom.width() - delta.x())
+                geom.setLeft(geom.right() - new_w)
+            elif self._resize_edge & 2:
+                geom.setWidth(max(min_w, geom.width() + delta.x()))
+            if self._resize_edge & 4:
+                new_h = max(min_h, geom.height() - delta.y())
+                geom.setTop(geom.bottom() - new_h)
+            elif self._resize_edge & 8:
+                geom.setHeight(max(min_h, geom.height() + delta.y()))
+            self.setGeometry(geom)
+            e.accept()
+            return
+        edge = self._get_resize_edge(e.position().toPoint())
+        self.setCursor(self._cursor_for_edge(edge))
+        super().mouseMoveEvent(e)
+
+    def mouseReleaseEvent(self, e) -> None:
+        if getattr(self, "_resize_edge", 0):
+            self._resize_edge = 0
+            self.setCursor(Qt.ArrowCursor)
+            e.accept()
+            return
+        super().mouseReleaseEvent(e)
+
     def moveEvent(self, event) -> None:
         super().moveEvent(event)
         if getattr(self, "_geom_ready", False):
             self.settings.set("window_x", int(self.x()))
             self.settings.set("window_y", int(self.y()))
 
-    def resizeEvent(self, _e) -> None:
+    def resizeEvent(self, e) -> None:
+        super().resizeEvent(e)
         self._layout_notes()
+        if getattr(self, "_geom_ready", False) and not self.isMaximized():
+            self.settings.set("window_w", int(self.width()))
+            self.settings.set("window_h", int(self.height()))
 
     def _notify(self, text: str, kind: str = "info", detail: str = "") -> None:
         text = redact(text)
@@ -3642,7 +3822,7 @@ class Shell(QWidget):
         self.notes.setGeometry(self._popover_rect(0))
 
     def _popover_rect(self, offset: int = 0) -> QRect:
-        x = WIN_W - 12 - NOTIF_W
+        x = self.width() - 12 - NOTIF_W
         y = PAD + TB + 8 + offset
         return QRect(x, y, NOTIF_W, self.notes.height())
 
@@ -3811,7 +3991,7 @@ class Shell(QWidget):
     def _cycle_page(self, step: int) -> None:
         names = list(self.pages)
         cur = self.stack.currentWidget()
-        idx = next((i for i, n in enumerate(names) if self.pages[n] is cur), 0)
+        idx = next((i for i, n in enumerate(names) if self.page_scrolls[n] is cur), 0)
         self.set_page(names[(idx + step) % len(names)])
 
     def install_hotkey(self) -> bool:
@@ -4180,11 +4360,12 @@ class Shell(QWidget):
     def set_page(self, name: str, animate: bool = True) -> None:
         if name not in self.pages:
             return
-        if self.notes_open and self.pages[name] is not self.stack.currentWidget():
+        current = next((n for n, widget in self.page_scrolls.items() if widget is self.stack.currentWidget()), name)
+        if self.notes_open and name != current:
             self._close_notes()
         self.t0 = time.perf_counter()
         page = self.pages[name]
-        self.stack.setCurrentWidget(page)
+        self.stack.setCurrentWidget(self.page_scrolls[name])
         self.rail.set_active(name)
         self.log_page.set_active(name == "log")
         self.card_anims = []

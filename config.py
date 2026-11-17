@@ -22,13 +22,16 @@ TEMPLATE_NAMES = {
     "menu_return": "menu_return_btn.png",
     "storefront_play": "storefront_play_btn.png",
     "item_found": "item_found_btn.png",
+    "treasure_reward": "treasure_reward.png",
+    "treasure_reward_banner": "treasure_reward_banner.png",
+    "pirate_token": "pirate_token.png",
 }
 MODES = {
     "A": "A: 通常ループ (続行→スキップ→ロビーへ)",
     "B": "B: 待機島で待ってEscから退出",
     "C": "C: 待機島で待って退出、アイテム発見でAへ切替",
 }
-OPTIONAL_TEMPLATES = {"popup", "item_found", "storefront_play", "claim_single", "claim"}
+OPTIONAL_TEMPLATES = {"popup", "item_found", "storefront_play", "claim_single", "claim", "treasure_reward", "treasure_reward_banner", "pirate_token"}
 LANGS = {
     "ja": "日本語",
     "en": "English",
@@ -38,17 +41,32 @@ LANGS = {
     "fr": "Français (beta)",
 }
 UI_THEMES = ("blue", "violet", "emerald", "amber", "light")
+MOVEMENT_PROFILES = ("continuous", "pulsed")
 PLATE_LANGS = ("es", "pt", "ru", "fr")
-LANG_INDEPENDENT = {"item_found", "storefront_play", "hud", "menu_return", "continue", "skip", "menu_btn"}
+LANG_INDEPENDENT = {
+    "item_found",
+    "storefront_play",
+    "hud",
+    "menu_return",
+    "continue",
+    "skip",
+    "menu_btn",
+    "treasure_reward",
+    "treasure_reward_banner",
+    "pirate_token",
+}
 PLATES = {
     "play": {"roi": (0.0, 0.7, 0.4, 1.0), "threshold": 0.92},
-    "return_lobby": {"roi": (0.55, 0.3, 1.0, 0.52), "threshold": 0.8},
-    "claim": {"roi": (0.503, 0.8, 1.0, 1.0), "threshold": 0.93},
+    "return_lobby": {"roi": (0.55, 0.3, 1.0, 0.52), "threshold": 0.68},
+    "claim": {"roi": (0.20, 0.70, 0.80, 0.98), "threshold": 0.85},
+    "claim_single": {"roi": (0.20, 0.70, 0.80, 0.98), "threshold": 0.85},
     "hud": {"roi": (0.0, 0.8, 0.3, 1.0), "threshold": 0.85},
     "menu_btn": {"roi": (0.7, 0.0, 1.0, 0.18), "threshold": 0.85},
     "menu_return": {"roi": (0.55, 0.0, 1.0, 0.36), "threshold": 0.85},
     "storefront_play": {"roi": (0.0, 0.55, 0.3, 0.8), "threshold": 0.8},
     "item_found": {"roi": (0.3, 0.0, 0.7, 0.4), "threshold": 0.75},
+    "treasure_reward_banner": {"roi": (0.15, 0.15, 0.85, 0.85), "threshold": 0.78},
+    "pirate_token": {"roi": (0.30, 0.04, 0.70, 0.40), "threshold": 0.72},
 }
 PLATE_UNUSED = {"claim_single"}
 
@@ -173,6 +191,16 @@ class Settings:
     topmost: bool = False
     window_x: int = -1
     window_y: int = -1
+    window_w: int = 940
+    window_h: int = 680
+    window_maximized: bool = False
+    movement_profile: str = "continuous"
+    sprint_enabled: bool = True
+    sprint_interval_s: float = 3.0
+    sprint_hold_s: float = 15.0
+    jump_stride_enabled: bool = True
+    jump_stride_interval_s: float = 5.0
+    treasure_shot_enabled: bool = True
 
     @property
     def path(self):
@@ -198,6 +226,11 @@ NUMBER_RANGES = {
     "bus_dive_seconds": (1.0, 60.0),
     "bus_drop_min": (1, 60),
     "bus_drop_max": (1, 60),
+    "sprint_interval_s": (0.5, 60.0),
+    "sprint_hold_s": (1.0, 60.0),
+    "jump_stride_interval_s": (1.0, 30.0),
+    "window_w": (640, 3840),
+    "window_h": (480, 2160),
 }
 PICKAXE_SLOT_KEYS = tuple("1234567890")
 
@@ -269,6 +302,8 @@ def load_user_settings(s: "Settings", path: str = "") -> None:
             if k == "mode" and v not in MODES:
                 continue
             if k == "ui_theme" and v not in UI_THEMES:
+                continue
+            if k == "movement_profile" and v not in MOVEMENT_PROFILES:
                 continue
             setattr(s, k, v)
     except Exception:

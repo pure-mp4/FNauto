@@ -10,7 +10,7 @@ SETTLE_S = 0.025
 AFTER_S = 0.025
 DRAG_WAIT_S = 0.5
 WM_ACTIVATE, WM_KEYDOWN, WM_KEYUP, WA_ACTIVE = (6, 256, 257, 1)
-VK_NAMES = {"space": 32, "esc": 27, "escape": 27, "w": 87, "a": 65, "s": 83, "d": 68, "enter": 13}
+VK_NAMES = {"space": 32, "esc": 27, "escape": 27, "w": 87, "a": 65, "s": 83, "d": 68, "enter": 13, "shift": 160, "shiftleft": 160}
 
 
 class Win32Input:

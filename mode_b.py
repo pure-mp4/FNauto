@@ -4,7 +4,7 @@ from typing import Callable, Dict, Optional
 import numpy as np
 import config
 from autocal import AutoCalibrator, still_visible
-from state_machine import POPUP_KEYS, REWARD_KEYS, RewardCounter, State, StepResult, note_claim, visible_rewards
+from state_machine import POPUP_KEYS, REWARD_KEYS, RewardCounter, State, StepResult, is_valid_claim_position, note_claim, visible_rewards
 import squad_bar
 from mode_fix import ModeFix
 from reward_fallback import RewardFallback
@@ -193,6 +193,13 @@ class ModeB:
                     return self._lobby(frame, now, ox, oy)
 
     def _lobby(self, frame, now, ox, oy) -> StepResult:
+        pt = self.survey.poll(frame)
+        if pt and self.ctrl.click(pt[0] + ox, pt[1] + oy):
+            return StepResult(self.state, 0.0, True, "clicked survey skip (stay)", "survey")
+        for key in POPUP_KEYS:
+            m, score = self._find(key, frame)
+            if m and is_valid_claim_position(frame, key, m) and self._click(m, ox, oy, key):
+                return StepResult(self.state, score, True, f"clicked {key} (stay)", key)
         if self.ctrl.ready():
             fx = self.modefix.poll(frame)
             if fx and self.ctrl.click(fx[0] + ox, fx[1] + oy):
@@ -202,32 +209,18 @@ class ModeB:
             self.state = State.B_WAIT_MATCH
             return StepResult(self.state, play_score, True, "clicked play")
         else:
-            for key in POPUP_KEYS:
-                m, score = self._find(key, frame)
-                if self._click(m, ox, oy):
-                    return StepResult(self.state, score, True, f"clicked {key} (stay)", key)
-            pt = self.survey.poll(frame)
-            if pt and self.ctrl.click(pt[0] + ox, pt[1] + oy):
-                return StepResult(self.state, 0.0, True, "clicked survey skip (stay)", "survey")
+            m, score = self._find("menu_return", frame)
+            if self._click(m, ox, oy):
+                return StepResult(self.state, score, True, "clicked menu_return (retry)")
             else:
-                m, score = self._find("menu_return", frame)
-                if self._click(m, ox, oy):
-                    return StepResult(self.state, score, True, "clicked menu_return (retry)")
+                m, score = self._find("hud", frame)
+                if m:
+                    return self._enter_countdown(now, score, "island detected")
                 else:
-                    m, score = self._find("hud", frame)
-                    if m:
-                        return self._enter_countdown(now, score, "island detected")
+                    if self._calibrate(frame, "play", play_score, ox, oy, State.B_WAIT_MATCH):
+                        return StepResult(self.state, play_score, True, "auto-calibrate test click on play")
                     else:
-                        if self._calibrate(frame, "play", play_score, ox, oy, State.B_WAIT_MATCH):
-                            return StepResult(self.state, play_score, True, "auto-calibrate test click on play")
-                        else:
-                            pt = self.fallback.poll(frame)
-                            if pt and self.ctrl.click(pt[0] + ox, pt[1] + oy):
-                                return StepResult(
-                                    self.state, 0.0, True, "clicked reward button (fallback)", "claim_single"
-                                )
-                            else:
-                                return StepResult(self.state, play_score, False, "waiting play")
+                        return StepResult(self.state, play_score, False, "waiting play")
 
     def _loading(self, frame, now, ox, oy) -> StepResult:
         m, hud_score = self._find("hud", frame)

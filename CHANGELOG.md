@@ -1,5 +1,36 @@
 # Changelog
 
+## 1.1 — 2026-11-17
+
+### Fixed
+
+- Stop now keeps watching the worker until it has actually exited. The Home
+  button no longer stays on “Stopping…” when worker cleanup takes longer than
+  the old five-second wait.
+- Spinbox rows now use a 36px control height with vertically centered text,
+  44px dependent rows, consistent toggle and card spacing, and aligned columns
+  across Home, Behaviour, Discord, and Extras.
+- Pages that exceed the available height now scroll with a slim themed
+  scrollbar, and localized stat cards are tall enough at the minimum window
+  size.
+
+### Added
+
+- Continuous human-style movement with strafing, timed jumps, camera turns, and
+  key-release heartbeats.
+- Pirate Token detection with local LootVault capture and optional Discord
+  screenshot delivery.
+- Match-completion Discord cards, a claim-position guard, HUD lockout, two-frame
+  Continue confirmation, AutoCalibrator safeguards, and returning-lobby Play
+  recovery.
+
+### Tests
+
+- Added a regression test for the stop watcher waiting through slow worker
+  shutdown.
+
+See [docs/RELEASE_NOTES_v1.1.md](docs/RELEASE_NOTES_v1.1.md) for install notes.
+
 ## 1.0.1 — 2026-11-16
 
 ### Fixed

@@ -28,6 +28,8 @@ class AutoCalibrator:
         self._cool = {}
 
     def threshold_for(self, key: str, base: float) -> float:
+        if key in ("continue", "skip", "hud"):
+            return base
         v = self.adapted.get(key)
         if v is not None:
             return min(base, v)
@@ -86,6 +88,9 @@ class AutoCalibrator:
         meta: Optional[dict] = None,
     ) -> bool:
         if not getattr(self.s, "auto_calibrate", False) or tpl is None or self.trial is not None:
+            return False
+        st_name = getattr(state, "name", str(state))
+        if key in ("continue", "skip", "hud") or "IN_MATCH" in st_name:
             return False
         try:
             now = self._clock()

@@ -19,8 +19,10 @@ APP_VERSION = _version()
 
 def numeric_version(value: str) -> tuple[int, int, int, int]:
     parts = [int(part) for part in value.split(".")]
+    if len(parts) == 2:
+        parts.append(0)
     if len(parts) != 3 or any(part < 0 for part in parts):
-        raise ValueError(f"APP_VERSION must be MAJOR.MINOR.PATCH: {value!r}")
+        raise ValueError(f"APP_VERSION must be MAJOR.MINOR[.PATCH]: {value!r}")
     return (*parts, 0)
 
 

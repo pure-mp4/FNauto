@@ -3,8 +3,8 @@ from typing import Callable, Optional, Tuple
 import cv2
 import numpy as np
 
-IDLE_S = 60.0
-RETRY_S = 30.0
+IDLE_S = 2.5
+RETRY_S = 5.0
 GAP_S = 10.0
 BAND = (0.3, 0.76, 0.97, 0.98)
 
@@ -46,12 +46,7 @@ class RewardFallback:
         self._since = None
 
     def poll(self, frame: np.ndarray) -> Optional[Tuple[int, int]]:
-        now = self._clock()
-        if self._since is None or now - self._last_poll > GAP_S:
-            self._since = now
-        self._last_poll = now
-        if now - self._since < IDLE_S or now < self._next:
-            return None
-        else:
-            self._next = now + RETRY_S
-            return find_white_button(frame)
+        # Blind white-button scanning is disabled to prevent falsely clicking
+        # the lobby Emote button. Reward claiming strictly requires genuine
+        # template matching for 'claim' or 'claim_single'.
+        return None

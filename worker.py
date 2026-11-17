@@ -17,7 +17,7 @@ from humanizer import CoffeeBreak
 from loot_vault import LootVault
 from mode_b import ModeB
 from mode_c import ModeC
-from discord_webhook import DiscordReporter
+from discord_webhook import DiscordReporter, _duration_text
 from reward_shot import RewardShotSender
 from rescue import Rescue
 from relauncher import GameRelauncher
@@ -63,7 +63,7 @@ def load_templates(lang: str) -> dict:
     if not os.path.isfile(plate_path):
         plate_path = os.path.join(config.bundled_assets_dir(), "return_lobby_btn_plate.png")
     templates["return_lobby_plate"] = load_template_auto(
-        plate_path, {"roi": config.PLATES["return_lobby"]["roi"], "threshold": 0.84}
+        plate_path, {"roi": config.PLATES["return_lobby"]["roi"], "threshold": config.PLATES["return_lobby"]["threshold"]}
     )
     for key, filename in (
         ("return_lobby_text_en", "return_lobby_btn_en.png"),
@@ -188,7 +188,7 @@ class Worker(threading.Thread):
             active=in_match,
             focuser=ensure_game_foreground,
             swapper=bg.context,
-            look=ctrl.look,
+            look=lambda dx, dy, ms, force=True: ctrl.look(dx, dy, ms, force=force),
             swing=ctrl.swing,
             dive_look=lambda dx, dy, ms: ctrl.look(dx, dy, ms, force=True),
             away=getattr(bg, "other_window_in_front", None),
@@ -199,7 +199,12 @@ class Worker(threading.Thread):
         bus = BusDrop(self.s, log=self.log_q.put)
         afk_thread = threading.Thread(target=afk.run, args=(self.stop_event, self.log_q.put), daemon=True)
         afk_thread.start()
-        space = SpacePresser(self.s, active=in_match, press=lambda: ctrl.press("space"), defer=bg.user_busy)
+        def space_active() -> bool:
+            if getattr(self.s, "movement_profile", "continuous") == "continuous":
+                return False
+            return in_match()
+
+        space = SpacePresser(self.s, active=space_active, press=lambda: ctrl.press("space"), defer=bg.user_busy)
         space_thread = threading.Thread(target=space.run, args=(self.stop_event, self.log_q.put), daemon=True)
         space_thread.start()
         self.relauncher = GameRelauncher(self.s, log=self.log_q.put)
@@ -212,6 +217,10 @@ class Worker(threading.Thread):
         diag_since = time.monotonic()
         diag_last = 0.0
         diag_count = 0
+        last_treasure_shot = -1000.0
+        last_completed_loops = sum((m.loops for m in machines.values()))
+        match_start_mono = None
+        match_start_wall = None
 
         def alert(code: str, detail: str) -> None:
             if self.reporter and self.s.alert_enabled:
@@ -293,15 +302,76 @@ class Worker(threading.Thread):
                     dog.ok()
                     if in_match() and bus.observe(frame):
                         afk.dive_async(self.stop_event, self.log_q.put)
+                    if in_match() and getattr(self.s, "treasure_shot_enabled", True):
+                        ttpl = templates.get("pirate_token")
+                        if ttpl is None:
+                            ttpl = templates.get("treasure_reward_banner")
+                        if ttpl is None:
+                            ttpl = templates.get("treasure_reward")
+                        if ttpl is not None and (now_m - last_treasure_shot >= 15.0):
+                            try:
+                                fh, fw = frame.shape[:2]
+                                rx0, ry0 = int(0.28 * fw), int(0.04 * fh)
+                                rx1, ry1 = int(0.72 * fw), int(0.42 * fh)
+                                roi = frame[ry0:ry1, rx0:rx1]
+                                if isinstance(ttpl, Plate):
+                                    tm, tscore = find_plate(frame, ttpl, self.s.scales)
+                                else:
+                                    tm, tscore = find_template(roi, ttpl, 0.72, self.s.scales)
+                                if tm:
+                                    last_treasure_shot = now_m
+                                    self.log_q.put(f"[treasure] Pirate Token reward detected! (score: {tscore:.2f}) saving full screenshot...")
+                                    vault.save_treasure(frame, sm.loops)
+                                    rshot.notify_treasure(frame)
+                            except Exception:
+                                pass
                     if r.clicked:
                         dog.action(f"{r.state.value}:{r.key}")
                     dog.tick()
                     self.status.update(state=r.state.value, score=r.score, loops=sm.loops)
                     resc.tick(r.state.value, r.clicked, frame, ox, oy)
+                    current_loops = sum((m.loops for m in machines.values()))
+                    if current_loops > last_completed_loops:
+                        now_wall = time.time()
+                        now_mono = time.monotonic()
+                        if match_start_mono is not None and match_start_wall is not None:
+                            duration_s = int(max(0, now_mono - match_start_mono))
+                            start_wall = match_start_wall
+                        else:
+                            duration_s = 0
+                            start_wall = now_wall
+                        time_taken = _duration_text(duration_s)
+                        time_from = time.strftime("%H:%M:%S", time.localtime(start_wall))
+                        time_to = time.strftime("%H:%M:%S", time.localtime(now_wall))
+                        for match_idx in range(last_completed_loops + 1, current_loops + 1):
+                            self.log_q.put(
+                                f"[match] Match {match_idx} completed ({time_taken}, from {time_from} to {time_to})"
+                            )
+                            if self.reporter:
+                                self.reporter.send_match_completed(
+                                    match_num=match_idx,
+                                    time_taken=time_taken,
+                                    time_from=time_from,
+                                    time_to=time_to,
+                                )
+                        last_completed_loops = current_loops
+                        match_start_mono = None
+                        match_start_wall = None
+                    elif current_loops < last_completed_loops:
+                        last_completed_loops = current_loops
+
+                    if match_start_mono is None:
+                        if (r.clicked and r.key in ("play", "storefront_play")) or in_match() or sm.state is State.A_LOADING:
+                            match_start_mono = time.monotonic()
+                            match_start_wall = time.time()
+                    elif r.clicked and r.key in ("play", "storefront_play"):
+                        match_start_mono = time.monotonic()
+                        match_start_wall = time.time()
+
                     if self.reporter:
                         if r.clicked:
                             self.reporter.record_action()
-                        self.reporter.set_loops(sum((m.loops for m in machines.values())))
+                        self.reporter.set_loops(current_loops)
                         self.reporter.set_popups(sum((m.rewards.count for m in machines.values())))
                         self.reporter.set_claims(sum((m.claims for m in machines.values())))
                         self.reporter.maybe_send_periodic(self.s.report_hours if self.s.telemetry_enabled else 0)
@@ -311,7 +381,8 @@ class Worker(threading.Thread):
                 except Exception as e:
                     self.log_q.put(f"error: {e}")
                     dog.error(f"{type(e).__name__}: {e}")
-                self.stop_event.wait(config.get_jittered_wait(self.s.poll_interval, self.s))
+                wait_s = 1.0 if in_match() else config.get_jittered_wait(self.s.poll_interval, self.s)
+                self.stop_event.wait(wait_s)
         except BaseException as e:
             dog.fatal(f"{type(e).__name__}: {e}")
             raise

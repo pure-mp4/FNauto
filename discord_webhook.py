@@ -381,6 +381,33 @@ class DiscordReporter:
         )
         return self._queue(payload, callback)
 
+    def send_match_completed(
+        self,
+        match_num: int,
+        time_taken: str,
+        time_from: str,
+        time_to: str,
+        callback=None,
+    ):
+        if not bool(_get(self.settings, "telemetry_enabled", True)) or not self.configured:
+            return None
+        payload = {
+            "username": "FNauto",
+            "allowed_mentions": {"parse": []},
+            "embeds": [
+                {
+                    "title": f"Match {match_num} completed",
+                    "color": 0x2ED47A,
+                    "fields": [
+                        {"name": "Time taken", "value": str(time_taken), "inline": True},
+                        {"name": "Time from", "value": str(time_from), "inline": True},
+                        {"name": "Time to", "value": str(time_to), "inline": True},
+                    ],
+                }
+            ],
+        }
+        return self._queue(payload, callback)
+
     def send_session_summary(self, callback=None) -> None:
         if not bool(_get(self.settings, "telemetry_enabled", True)) or not self.configured:
             return None
@@ -433,6 +460,23 @@ class DiscordReporter:
                 {
                     "title": "Reward screen",
                     "color": 0x2ED47A,
+                    "image": {"url": "attachment://reward.jpg"},
+                }
+            ],
+        }
+        return self._queue(payload, callback, bytes(jpeg))
+
+    def send_treasure(self, jpeg: bytes, callback=None) -> None:
+        if not bool(_get(self.settings, "treasure_shot_enabled", True)):
+            return None
+        payload = {
+            "username": "FNauto",
+            "allowed_mentions": {"parse": []},
+            "embeds": [
+                {
+                    "title": "Treasure Found!",
+                    "description": "An in-game treasure reward notification was captured.",
+                    "color": 0xFFB800,
                     "image": {"url": "attachment://reward.jpg"},
                 }
             ],

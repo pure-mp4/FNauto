@@ -49,12 +49,16 @@ def _halted(stop) -> bool:
 def _default_key_down(key: str) -> None:
     import pydirectinput
 
+    pydirectinput.FAILSAFE = False
+    pydirectinput.PAUSE = 0.0
     pydirectinput.keyDown(key)
 
 
 def _default_key_up(key: str) -> None:
     import pydirectinput
 
+    pydirectinput.FAILSAFE = False
+    pydirectinput.PAUSE = 0.0
     pydirectinput.keyUp(key)
 
 
@@ -98,6 +102,7 @@ class AntiAfk:
         self._ratio = 1.0
         self.last_hold = 0.0
         self._last_key = ""
+        self._held_keys = set()
 
     def _humanize(self) -> bool:
         return bool(getattr(self.s, "humanizer_enabled", False))
@@ -418,16 +423,247 @@ class AntiAfk:
             log(f"[jitter] waiting for {base * ratio:.1f}s (range: {lo:.0f}s-{hi:.0f}s)")
 
     def release_all(self) -> None:
-        with self._input_context():
-            for k in set(self.s.afk_keys) | {"w", "a", "s", "d"}:
+        if hasattr(self, "_held_keys"):
+            self._held_keys.clear()
+        for k in set(self.s.afk_keys) | {"w", "a", "s", "d", "shift", "space"}:
+            try:
+                self._up(k)
+            except Exception:
+                pass
+
+    def _turn_camera(self, angle_deg: float = 0.0, duration_ms: int = 0) -> None:
+        """
+        Smoothly rotates camera horizontally between 0 and 90 degrees
+        with subtle, minimal vertical pitch adjustment (slight up/down).
+        """
+        if not self._can_look():
+            return
+        r = self._rng
+        if angle_deg == 0.0:
+            angle_deg = r.uniform(15.0, 90.0) * r.choice((-1, 1))
+        else:
+            angle_deg = max(-90.0, min(90.0, float(angle_deg)))
+
+        # Approximately 640 mouse counts per 90 degrees in Fortnite (doubled rotation value)
+        dx = int(round(2.0 * (angle_deg / 90.0) * r.uniform(280, 350)))
+        # Subtle vertical adjustment: slight up/down (-6 to +6 px, approx 1-3 deg)
+        dy = r.randint(-6, 6)
+        if duration_ms <= 0:
+            duration_ms = int(round(180 + (abs(angle_deg) / 90.0) * 300 + r.uniform(-20, 40)))
+            duration_ms = max(160, min(500, duration_ms))
+        try:
+            if self._look:
+                self._look(dx, dy, duration_ms)
+        except Exception:
+            pass
+
+    def _run_continuous(self, stop: threading.Event, log: Callable[[str], None] = lambda _m: None) -> None:
+        r = self._rng
+        self._held_keys = set()
+        held_keys = self._held_keys
+
+        def set_held(target_keys: set) -> None:
+            """
+            Ensures exactly target_keys are held down (via keyDown).
+            Releases keys no longer in target_keys (via keyUp).
+            Movement keys are HELD continuously until explicitly updated.
+            """
+            to_release = held_keys - target_keys
+            for k in to_release:
                 try:
                     self._up(k)
                 except Exception:
                     pass
-                else:
+                held_keys.discard(k)
+
+            to_press = target_keys - held_keys
+            for k in to_press:
+                try:
+                    self._down(k)
+                    held_keys.add(k)
+                except Exception:
                     pass
 
+        def tap_jump() -> None:
+            """
+            Jumps by pressing Space briefly (~0.1s) WHILE MOVEMENT KEYS REMAIN HELD!
+            """
+            try:
+                self._down("space")
+                time.sleep(r.uniform(0.08, 0.13))
+            finally:
+                try:
+                    self._up("space")
+                except Exception:
+                    pass
+
+        def clear_all() -> None:
+            for k in list(held_keys):
+                try:
+                    self._up(k)
+                except Exception:
+                    pass
+            held_keys.clear()
+            self.release_all()
+
+        def pick_next_action(prev_action: str) -> tuple[str, float]:
+            """
+            Selects the next randomized action and duration with non-repeating stochastic weights.
+            Mostly sprinting, with jogging (~5s) to recover stamina, and 0-90 degree turns.
+            """
+            if prev_action in ("SPRINT", "PIVOT"):
+                choices = [
+                    ("JOG", 40),
+                    ("SPRINT", 45),
+                    ("PIVOT", 15),
+                ]
+            else:
+                choices = [
+                    ("SPRINT", 65),
+                    ("PIVOT", 20),
+                    ("JOG", 15),
+                ]
+
+            total_weight = sum(w for _, w in choices)
+            roll = r.uniform(0, total_weight)
+            cum = 0.0
+            selected = choices[0][0]
+            for act, w in choices:
+                cum += w
+                if roll <= cum:
+                    selected = act
+                    break
+
+            if selected == "SPRINT":
+                dur = r.uniform(4.0, 8.5)
+            elif selected == "JOG":
+                dur = r.uniform(4.0, 6.5) # user requested: "jogging for 5 secs or something"
+            elif selected == "PIVOT":
+                dur = r.uniform(2.5, 4.5)
+            else:
+                dur = r.uniform(3.5, 6.0)
+
+            return selected, dur
+
+        current_action, action_dur = "SPRINT", r.uniform(4.0, 7.0)
+        action_start = self._clock()
+
+        t_next_weave = self._clock() + r.uniform(2.0, 3.5)
+        t_weave_end = 0.0
+        weave_key = "a"
+
+        t_next_jump = self._clock() + r.uniform(3.0, 5.0)
+        t_next_turn = self._clock() + r.uniform(1.0, 10.0)
+        t_next_refresh = self._clock() + 0.35
+        t_w_pause_end = 0.0
+        t_w_next_pause = self._clock() + r.uniform(15.0, 20.0)
+        t_focus_check = 0.0
+
+        log("[movement] organic human engine active (held keys, 0-90 deg turns, fully randomized)")
+
+        try:
+            while not stop.wait(0.025):
+                now = self._clock()
+
+                if self._diving.is_set() or not self.s.afk_enabled or not self.active():
+                    if held_keys:
+                        clear_all()
+                    self._pickaxe_due = None
+                    action_start = now
+                    continue
+
+                if now >= t_focus_check:
+                    t_focus_check = now + 4.0
+                    if self._focuser:
+                        self._focuser()
+
+                # Action transition
+                if now - action_start >= action_dur:
+                    current_action, action_dur = pick_next_action(current_action)
+                    action_start = now
+
+                    # If starting a pivot, execute a smooth 0-90 degree camera turn with subtle vertical tilt!
+                    if current_action == "PIVOT":
+                        turn_deg = r.uniform(25.0, 90.0) * r.choice((-1, 1))
+                        self._turn_camera(turn_deg)
+
+                # Camera turning between 0 and 90 degrees once every 1s-10s
+                if now >= t_next_turn:
+                    t_next_turn = now + r.uniform(1.0, 10.0)
+                    turn_deg = r.uniform(15.0, 90.0) * r.choice((-1, 1))
+                    self._turn_camera(turn_deg)
+
+                # Lateral in-motion weave timing (holding A or D while moving forward/sprinting)
+                if now >= t_next_weave and now >= t_weave_end:
+                    weave_key = "d" if (weave_key == "a" and r.random() < 0.7) else ("a" if r.random() < 0.7 else r.choice(("a", "d")))
+                    weave_dur = r.uniform(0.35, 0.85)
+                    t_weave_end = now + weave_dur
+                    t_next_weave = now + weave_dur + r.uniform(2.5, 4.5)
+                    # Natural slight camera steer in weave direction
+                    lean_deg = (15.0 if weave_key == "d" else -15.0) + r.uniform(-5, 5)
+                    self._turn_camera(lean_deg, int(r.uniform(180, 260)))
+
+                # 15-20s Run / 2s Release Cycle:
+                # Every 15-20s, release W for 2s, then hold it again.
+                # This guarantees a clean KeyUp -> KeyDown cycle, so even across
+                # player elimination or reboot van respawn, W re-triggers fresh!
+                is_w_paused = (now < t_w_pause_end)
+                if now >= t_w_next_pause and not is_w_paused:
+                    t_w_pause_end = now + r.uniform(1.8, 2.2)
+                    t_w_next_pause = t_w_pause_end + r.uniform(15.0, 20.0)
+                    is_w_paused = True
+
+                # Build the active held keys set:
+                target = set()
+                if not is_w_paused:
+                    # W is held to walk/run forward
+                    target.add("w")
+
+                    # Shift is held whenever sprinting or pivoting
+                    if current_action in ("SPRINT", "PIVOT") and getattr(self.s, "sprint_enabled", True):
+                        target.add("shift")
+
+                    # Lateral key (A or D) is held during weaves
+                    if now < t_weave_end:
+                        target.add(weave_key)
+
+                # Ensure exact key states are held (releases W & Shift cleanly during the 2s pause)
+                set_held(target)
+
+                # Periodic key heartbeat (hardware auto-repeat):
+                # Re-assert target keys (especially 'w') every ~0.3-0.5s while held
+                if now >= t_next_refresh:
+                    t_next_refresh = now + r.uniform(0.3, 0.5)
+                    for k in target:
+                        try:
+                            self._down(k)
+                        except Exception:
+                            pass
+
+                # In-motion jumps (while moving forward, keys remain held)
+                if not is_w_paused and getattr(self.s, "jump_stride_enabled", True) and now >= t_next_jump:
+                    j_int = max(3.0, float(getattr(self.s, "jump_stride_interval_s", 5.0)))
+                    t_next_jump = now + r.uniform(j_int * 0.8, j_int * 1.25)
+                    tap_jump()
+
+                # Pickaxe swing without interrupting held keys
+                if getattr(self.s, "pickaxe_afk_enabled", False) and self._swing:
+                    if self._pickaxe_due is None:
+                        self._pickaxe_due = now + self._pickaxe_delay()
+                    elif now >= self._pickaxe_due:
+                        self._pickaxe_due = now + self._pickaxe_delay()
+                        try:
+                            self._swing()
+                        except Exception:
+                            pass
+        finally:
+            clear_all()
+
     def run(self, stop: threading.Event, log: Callable[[str], None] = lambda _m: None) -> None:
+        if getattr(self.s, "movement_profile", "continuous") == "continuous":
+            self._run_continuous(stop, log)
+            return
+
         last = self._clock()
         try:
             while not stop.wait(0.2):

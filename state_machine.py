@@ -3,6 +3,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Callable, Dict, Optional
 import numpy as np
+import config
 from autocal import AutoCalibrator, still_visible
 from mode_fix import ModeFix
 from reward_fallback import RewardFallback
@@ -54,6 +55,19 @@ def note_claim(machine, key: str, frame: np.ndarray) -> None:
             return None
 
 
+def is_valid_claim_position(frame: np.ndarray, key: str, m) -> bool:
+    if key not in REWARD_KEYS or not m:
+        return True
+    try:
+        fh, fw = frame.shape[:2]
+        x, y = float(m[0]), float(m[1])
+        # Claim / Claim All buttons appear in the bottom-center region (0.18 to 0.82 horizontally,
+        # 0.65 to 0.98 vertically). Explicitly rejects the lobby Emote button on the bottom-right.
+        return (0.18 * fw <= x <= 0.82 * fw) and (0.65 * fh <= y <= 0.98 * fh)
+    except Exception:
+        return True
+
+
 def visible_rewards(frame: np.ndarray, templates: Dict[str, Optional[np.ndarray]], settings) -> set:
     seen = set()
     for key in REWARD_KEYS:
@@ -65,7 +79,7 @@ def visible_rewards(frame: np.ndarray, templates: Dict[str, Optional[np.ndarray]
                 m, _ = find_plate(frame, tpl, settings.scales)
             else:
                 m, _ = find_template(frame, tpl, settings.threshold, settings.scales)
-            if m:
+            if m and is_valid_claim_position(frame, key, m):
                 seen.add(key)
     return seen
 
@@ -113,6 +127,7 @@ class StateMachine:
         self._loading_since = 0.0
         self._loading_retry = 0.0
         self._loading_quiet = False
+        self._continue_seen = 0
 
     def start(self) -> None:
         if self.state is State.IDLE:
@@ -120,6 +135,7 @@ class StateMachine:
 
     def stop(self) -> None:
         self.state = State.IDLE
+        self._continue_seen = 0
 
     def step(self, frame: np.ndarray, ox: int = 0, oy: int = 0) -> StepResult:
         if self.state is State.IDLE:
@@ -143,7 +159,10 @@ class StateMachine:
         if isinstance(tpl, Plate):
             plate = self.cal.plate(key, tpl)
             return find_checked(frame, key, tpl, lambda f: find_plate(f, plate, self.s.scales))
-        thr = self.cal.threshold_for(key, self.s.threshold)
+        base_thr = config.PLATES.get(key, {}).get("threshold", self.s.threshold)
+        if key == "return_lobby" or key.startswith("return_lobby"):
+            base_thr = min(base_thr, 0.68)
+        thr = self.cal.threshold_for(key, base_thr)
         return find_checked(frame, key, tpl, lambda f: find_template(f, tpl, thr, self.s.scales))
 
     def _plate_allowed(self, frame: np.ndarray) -> bool:
@@ -203,7 +222,10 @@ class StateMachine:
                 out[key] = None
                 continue
             m, score = self._find(frame, key, tpl)
-            thr = tpl.threshold if isinstance(tpl, Plate) else self.cal.threshold_for(key, self.s.threshold)
+            base_thr = tpl.threshold if isinstance(tpl, Plate) else config.PLATES.get(key, {}).get("threshold", self.s.threshold)
+            if key == "return_lobby" or key.startswith("return_lobby"):
+                base_thr = min(base_thr, 0.68)
+            thr = self.cal.threshold_for(key, base_thr)
             out[key] = {
                 "score": round(float(score), 3),
                 "threshold": round(float(thr), 3),
@@ -214,18 +236,75 @@ class StateMachine:
     def _step(self, frame: np.ndarray, ox: int = 0, oy: int = 0) -> StepResult:
         if self.state is State.A_LOADING:
             return self._loading(frame, ox, oy)
-        if self.state is State.SEARCHING_PLAY and self.ctrl.ready():
-            fx = self.modefix.poll(frame)
-            if fx and self.ctrl.click(fx[0] + ox, fx[1] + oy):
-                return StepResult(self.state, 0.0, True, fx[2])
+        if self.state in (State.SEARCHING_PLAY, State.SKIPPING_RESULT, State.RETURNING_LOBBY):
+            hud_tpl = self.templates.get("hud")
+            if hud_tpl is not None:
+                hud_m, hud_score = self._find(frame, "hud", hud_tpl)
+                if hud_m:
+                    self.state = State.IN_MATCH
+                    self._continue_seen = 0
+                    return StepResult(self.state, hud_score, False, "match in progress (hud detected)")
+        if self.state is State.IN_MATCH:
+            hud_tpl = self.templates.get("hud")
+            if hud_tpl is not None:
+                hud_m, hud_score = self._find(frame, "hud", hud_tpl)
+                if hud_m:
+                    self._continue_seen = 0
+                    return StepResult(self.state, hud_score, False, "match in progress")
+            cont_tpl = self.templates.get("continue")
+            if cont_tpl is not None:
+                cm, cscore = self._find(frame, "continue", cont_tpl)
+                if cm:
+                    self._continue_seen += 1
+                    if self._continue_seen >= 2:
+                        self._continue_seen = 0
+                        if self.ctrl.click(*(a + o for a, o in zip(aim_point("continue", cont_tpl, cm), (ox, oy)))):
+                            self.state = State.SKIPPING_RESULT
+                            return StepResult(self.state, cscore, True, "clicked continue", "continue")
+                    else:
+                        return StepResult(self.state, cscore, False, f"confirming continue ({self._continue_seen}/2)")
+                else:
+                    self._continue_seen = 0
+            else:
+                self._continue_seen = 0
+            for rkey in ("return_lobby_plate", "return_lobby"):
+                rtpl = self.templates.get(rkey)
+                if rtpl is None:
+                    continue
+                if rkey == "return_lobby_plate" and not self._plate_allowed(frame):
+                    continue
+                if rkey == "return_lobby" and not isinstance(rtpl, Plate):
+                    continue
+                rm, rscore = self._find(frame, rkey, rtpl)
+                if rm:
+                    if self.ctrl.click(*(a + o for a, o in zip(aim_point(rkey, rtpl, rm), (ox, oy)))):
+                        self.loops += 1
+                        self.state = State.SEARCHING_PLAY
+                        return StepResult(self.state, rscore, True, f"clicked {rkey}", rkey)
+            return StepResult(self.state, 0.0, False, "match in progress (waiting continue / reboot)")
+        if self.state is State.SEARCHING_PLAY:
+            pt = self.survey.poll(frame)
+            if pt and self.ctrl.click(pt[0] + ox, pt[1] + oy):
+                return StepResult(self.state, 0.0, True, "clicked survey skip (stay)", "survey")
+            for pkey in POPUP_KEYS:
+                ptpl = self.templates.get(pkey)
+                if ptpl is not None:
+                    pm, pscore = self._find(frame, pkey, ptpl)
+                    if pm and is_valid_claim_position(frame, pkey, pm):
+                        if self.ctrl.click(*(a + o for a, o in zip(aim_point(pkey, ptpl, pm), (ox, oy)))):
+                            return StepResult(self.state, pscore, True, f"clicked {pkey} (reward claim)", pkey)
+            if self.ctrl.ready():
+                fx = self.modefix.poll(frame)
+                if fx and self.ctrl.click(fx[0] + ox, fx[1] + oy):
+                    return StepResult(self.state, 0.0, True, fx[2])
         idx = next((i for i, (st, _) in enumerate(STAGES) if st is self.state))
         own_key = STAGES[idx][1]
         n = len(STAGES)
         cands = []
         for i in range(idx, n):
             key = STAGES[i][1]
-            if idx == 0 and key == "continue":
-                cands.append((key, None, False))
+            if idx == 0 and key in ("continue", "skip"):
+                continue
             else:
                 nxt = STAGES[(i + 1) % n][0]
                 if key == "play" and nxt is State.IN_MATCH:
@@ -236,7 +315,7 @@ class StateMachine:
         if idx >= 1 and not (self.state is State.IN_MATCH and STAGES[idx - 1][1] == "play"):
             cands.append((STAGES[idx - 1][1], None, False))
         if idx >= 2:
-            cands.append(("play", State.A_LOADING, False))
+            cands.append(("play", State.A_LOADING, self.state is State.RETURNING_LOBBY))
         if idx == 0:
             cands.insert(0, ("return_lobby", State.SEARCHING_PLAY, False))
         cands = cands + [("storefront_play", nxt, fin) for key, nxt, fin in cands if key == "play"]
@@ -250,6 +329,8 @@ class StateMachine:
             if key == "return_lobby_plate" and not self._plate_allowed(frame):
                 continue
             m, score = self._find(frame, key, tpl)
+            if key in REWARD_KEYS and not is_valid_claim_position(frame, key, m):
+                continue
             if key == own_key:
                 own_score = score
             if m:
@@ -269,9 +350,11 @@ class StateMachine:
         if own_tpl is None:
             return StepResult(self.state, 0.0, False, f"{own_key} template missing")
         else:
-            base = own_tpl.threshold if isinstance(own_tpl, Plate) else self.s.threshold
+            base = own_tpl.threshold if isinstance(own_tpl, Plate) else config.PLATES.get(own_key, {}).get("threshold", self.s.threshold)
+            if own_key == "return_lobby" or own_key.startswith("return_lobby"):
+                base = min(base, 0.68)
             own_nxt, own_fin = next(((n, f) for k, n, f in cands if k == own_key), (None, False))
-            if self.cal.attempt(
+            if self.state is not State.IN_MATCH and self.cal.attempt(
                 self.state,
                 frame,
                 own_key,
@@ -294,12 +377,4 @@ class StateMachine:
                     self.state = own_nxt
                 return StepResult(self.state, own_score, True, f"auto-calibrate test click on {own_key}")
             else:
-                if self.state is State.SEARCHING_PLAY:
-                    pt = self.survey.poll(frame)
-                    if pt and self.ctrl.click(pt[0] + ox, pt[1] + oy):
-                        return StepResult(self.state, 0.0, True, "clicked survey skip (stay)", "survey")
-                    else:
-                        pt = self.fallback.poll(frame)
-                        if pt and self.ctrl.click(pt[0] + ox, pt[1] + oy):
-                            return StepResult(self.state, 0.0, True, "clicked reward button (fallback)", "claim_single")
                 return StepResult(self.state, own_score, False, f"waiting {own_key}")

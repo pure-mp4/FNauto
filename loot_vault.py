@@ -36,7 +36,21 @@ class LootVault:
     def save(self, frame: np.ndarray, loop: int = 0) -> None:
         try:
             self._seq += 1
-            item = (np.array(frame, copy=True), int(loop), self._now(), self._seq)
+            item = (np.array(frame, copy=True), int(loop), self._now(), self._seq, "loot")
+            if self._sync:
+                self._write(*item)
+                return
+            if self._thread is None or not self._thread.is_alive():
+                self._thread = threading.Thread(target=self._run, daemon=True, name="FNauto-loot")
+                self._thread.start()
+            self._q.put_nowait(item)
+        except Exception:
+            return None
+
+    def save_treasure(self, frame: np.ndarray, loop: int = 0) -> None:
+        try:
+            self._seq += 1
+            item = (np.array(frame, copy=True), int(loop), self._now(), self._seq, "treasure")
             if self._sync:
                 self._write(*item)
                 return
@@ -54,16 +68,19 @@ class LootVault:
             except queue.Empty:
                 return None
             try:
-                self._write(*item)
+                if len(item) == 5:
+                    self._write(item[0], item[1], item[2], item[3], item[4])
+                else:
+                    self._write(item[0], item[1], item[2], item[3], "loot")
             except Exception:
                 pass
 
-    def _write(self, frame: np.ndarray, loop: int, t: float, seq: int) -> Optional[str]:
+    def _write(self, frame: np.ndarray, loop: int, t: float, seq: int, prefix: str = "loot") -> Optional[str]:
         os.makedirs(self.folder, exist_ok=True)
         stamp = time.strftime("%Y%m%d_%H%M%S", time.localtime(t))
-        path = os.path.join(self.folder, f"loot_{stamp}_loop{loop}.png")
+        path = os.path.join(self.folder, f"{prefix}_{stamp}_loop{loop}.png")
         if os.path.exists(path):
-            path = os.path.join(self.folder, f"loot_{stamp}_loop{loop}_{seq}.png")
+            path = os.path.join(self.folder, f"{prefix}_{stamp}_loop{loop}_{seq}.png")
         ok, buf = cv2.imencode(".png", frame)
         if not ok:
             return

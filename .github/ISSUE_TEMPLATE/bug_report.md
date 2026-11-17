@@ -15,7 +15,7 @@ assignees: ""
 **Expected behavior**
 
 **Environment**
-- FNauto version (bottom-left): v1.0.1
+- FNauto version (bottom-left): v1.1
 - Windows version:
 - Running from source or the release executable:
 - Game display mode:

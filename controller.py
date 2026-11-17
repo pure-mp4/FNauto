@@ -173,9 +173,11 @@ class Controller:
     def look(self, dx: int, dy: int, duration_ms: int, force: bool = False) -> None:
         if self.user_away() and (not force):
             return
-        else:
-            if self._focuser and (not self._background()):
+        if force or not self._background():
+            if self._focuser:
                 self._focuser()
+            move_camera_smooth(dx, dy, duration_ms, self._mover, self._sleep, self._rng)
+        else:
             with self._input_context("key"):
                 move_camera_smooth(dx, dy, duration_ms, self._mover, self._sleep, self._rng)
 
@@ -317,10 +319,11 @@ class MacroController:
             self._after_stop(w)
 
     def _watch_worker(self, w) -> None:
-        try:
-            w.join(5.0)
-        except Exception:
-            pass
+        while w.is_alive():
+            try:
+                w.join(0.25)
+            except Exception:
+                break
         if not w.is_alive() and not self.running():
             self._after_stop(w)
 
